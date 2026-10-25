@@ -2,6 +2,27 @@
 
 Newest first. One `## <version> — <date>` heading per version, then `feat:`, `fix:`, `breaking:` and `chore:` bullets (ADR-478). Built from git history; older versions: `git log -- plugins/ruflo-console`.
 
+## 0.49.1 — 2026-10-25
+- fix: the Plugin Catalog reads the marketplace clone on Windows. The clone's location is a drive path (`C:\Users\…\marketplaces\ruflo`), and the catalog refused anything not starting with `/`, so it said "the clone's marketplace.json is not readable" while the file was there. The catalog, each plugin's folder, and the plugins view's freshness row now use the shared path helpers (`paths.ts`).
+- fix: **forget history** (Events) and **forget saved views** (Workflows) work on Windows. They ran `rm -f`, which Windows does not have; there the files are emptied through the host file API (saved views as a valid empty document) and the result is verified by what the file holds. Linux and macOS are unchanged.
+- fix: ADR status changes on records with CRLF line endings (git autocrlf on Windows). A MADR record failed with "the front matter is not closed", and other formats got mixed endings; records are now edited as LF text and written back with their own endings.
+- fix: the standalone terminal (`ruflo tui`) draws in colour on Windows. It treated an unset `TERM` as "no terminal", but Windows Terminal, PowerShell and cmd leave `TERM` unset; only `TERM=dumb` or `NO_COLOR` turn colour off there.
+- fix: the Conversation board finds codex on Windows with `where` (there is no `which`).
+- fix: mission spend works on Windows (needs ruflo-cost-tracker 0.28.3, which fixes the ledger script itself).
+- fix: the autopilot's text checks know Windows (groundwork: a start is still refused there). A task naming `C:\…`, `\\share\…`, `..\…`, `%USERPROFILE%\…` or `$env:USERPROFILE\…` is checked against the envelope folders; `rmdir /s`, `del C:\`, `format C:`, `Remove-Item -Recurse` and `rm -rf C:\` are hard denies; a verify command may not be `cmd`, `powershell`, `pwsh`, `wsl`, `bash.exe` and the like, by basename under either separator and without `.exe`. These only park or refuse more.
+- fix: the Overview heading names the last two folders of a Windows project (`ruflo state in x/proj`), where it printed the whole `C:\…` path because it split on `/` only.
+- fix: stopping or messaging a workflow run on Windows finds its task id in a session transcript over 2 MB. The search used `grep`; Windows now uses PowerShell's `Select-String` (path and pattern passed as base64, never parsed as PowerShell).
+- fix: on Windows, which has no `printenv`, the OpenRouter key (`$OPENROUTER_API_KEY`) is read through the engine's environment read. The engine allows only a literal variable name there (`claude plugin validate` refuses a computed one, and the mod then does not load, so `/ruflo` is missing), so another endpoint's key cannot be read on Windows and the send says so instead of claiming the variable is unset.
+- chore: the smoke runs Claude Code's own `claude plugin validate` on the plugin (step 21, skipped without the CLI), and a spec checks that every `$.env.get/set` takes a literal name.
+- fix: a send to a federation peer on Windows says why nothing was sent. The helper is a bash script, and `bash` on a Windows PATH is the WSL launcher, which cannot open a `C:…` path.
+- fix: for a resumed run, the task id from a search is the latest launch, not the first. The search prints matches with no closing brace between them, so the pattern ran across both (any platform).
+- fix: the standalone terminal (`ruflo tui`) reads the installed plugins, the marketplaces and the workflow runs when `CLAUDE_CONFIG_DIR` is not set. Its config folder was left empty; it now falls back to `<home>/.claude` as the engine does (any platform; found by running every view against a real Windows machine).
+- fix: three folder guards (run folders, run files, cost paths) saw `..` only between slashes, so a `..` segment passed on Windows; a config folder ending in a backslash did not match. They use the shared Windows-aware path helpers.
+- fix: the Research section finds ruflo-goals on Windows (it had its own POSIX-only install-path check), and the menu and boot screen name the project by its last folder instead of the whole `C:…` path.
+- fix: the version and install folder the console shows for a plugin installed for several projects are those of the install that applies to this project (the project record, else the user one), not the first record in `installed_plugins.json`, which could be another project's. The updater uses the same Windows-aware comparison, so a session in a subfolder of the project, or with a different drive-letter case, no longer leaves the project's own install stale.
+- chore: `views/pane` reads `menuView` at call time (a cycle through mission-control and model-tools left it undefined when a test loaded the menu first), and `tui-actions` waits for the outcome it checks instead of a fixed 1.2 s. The whole spec set passes on Windows.
+- chore: the real-disk POSIX write specs (modes, FIFOs) are skipped on Windows, which writes through the host file API; one `ruflo tui --plain` spec no longer needs a runnable fake codex there.
+
 ## 0.49.0 — 2026-10-24
 - feat: exact managed session controls in the model palette with existing confirmation and permission gates
 - fix: a rescheduling session shows as running, and a session stopped at its budget, waiting on a required action or holding an open tool request shows as active instead of finished

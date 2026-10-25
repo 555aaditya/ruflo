@@ -24,6 +24,15 @@ export function joinPath(base: string, ...parts: string[]): string {
   return [trimTrailing(base), ...rest].join(sep)
 }
 
+/** True when `path` is `root` or a folder inside it. Windows paths compare ignoring case and separator style (`samePath`, `below`); POSIX paths exactly. */
+export const insideOrSame = (root: string, path: string): boolean => root !== '' && (samePath(root, path) || below(root, path) !== null)
+
+/** The last non-empty segment of a path under either separator: the project folder's name (`/a/b/` and `C:\a\b` both give `b`). */
+export const baseOf = (p: string): string => p.split(/[\\/]/).filter(part => part !== '').at(-1) ?? ''
+
+/** The last `count` segments of a path joined with `/`, for a heading: `/a/b/c` and `C:\a\b\c` both give `b/c`. */
+export const tailOf = (p: string, count = 2): string => p.split(/[\\/]/).slice(-count).join('/')
+
 /** Windows paths compare ignoring case, separator style and a trailing separator; POSIX paths compare exactly. */
 export function samePath(a: string, b: string): boolean {
   if (isWindowsPath(a) || isWindowsPath(b)) {
