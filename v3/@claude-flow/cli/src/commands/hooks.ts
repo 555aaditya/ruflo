@@ -1204,6 +1204,14 @@ const buildAgentsCommand: Command = {
         includePretrained: true,
       });
 
+      // #4558: the tool now rejects an invalid outputDir with { success: false, error }.
+      const failed = result as { success?: boolean; error?: string };
+      if (failed.success === false) {
+        spinner.fail('Agent config generation failed');
+        output.printError(`Build agents error: ${failed.error}`);
+        return { success: false, exitCode: 1 };
+      }
+
       spinner.succeed(`Generated ${result.agents.length} agent configs`);
 
       if (ctx.flags.format === 'json') {
