@@ -701,7 +701,7 @@ export const agentTools: MCPTool[] = [
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['status', 'scale', 'drain', 'fill'], description: 'Pool action' },
-        targetSize: { type: 'number', description: 'Target pool size (for scale action)' },
+        targetSize: { type: 'number', description: 'Target pool size (scale: grow or shrink to it; fill: grow to it, never shrink)' },
         agentType: { type: 'string', description: 'Agent type filter' },
       },
       required: ['action'],
@@ -750,7 +750,9 @@ export const agentTools: MCPTool[] = [
         };
       }
 
-      if (action === 'scale') {
+      // #4555: fill was advertised in the enum but had no branch. It is scale
+      // without the shrink step: grow agentType's pool to targetSize, never terminate.
+      if (action === 'scale' || action === 'fill') {
         const targetSize = input.targetSize === undefined ? 5 : input.targetSize;
         if (typeof targetSize !== 'number' || !Number.isSafeInteger(targetSize) || targetSize < 0) {
           return { action, error: 'targetSize must be a non-negative safe integer' };
@@ -775,7 +777,7 @@ export const agentTools: MCPTool[] = [
             };
             added.push(agentId);
           }
-        } else if (delta < 0) {
+        } else if (delta < 0 && action === 'scale') {
           const toRemove = agents.filter(a => a.agentType === agentType && a.status === 'idle').slice(0, -delta);
           for (const agent of toRemove) {
             store.agents[agent.agentId].status = 'terminated';
