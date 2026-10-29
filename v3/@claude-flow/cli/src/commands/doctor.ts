@@ -2402,6 +2402,12 @@ async function checkLearningLoop(): Promise<HealthCheck> {
   return { name: 'Learning loop (#4581)', ...learningLoopHealth(process.cwd()) };
 }
 
+// ADR-505: ruflo-mods compaction snapshots hold conversation text; warn when they exist and git does not ignore them.
+async function checkCompactSnapshots(): Promise<HealthCheck> {
+  const { compactSnapshotHealth } = await import('../mods/compact-snapshots.js');
+  return { name: 'Compaction snapshots (ADR-505)', ...compactSnapshotHealth(process.cwd()) };
+}
+
 // Opt-in @ruvector/typesafe task router (optional peer). `--component typesafe` only.
 async function checkTypesafeRouter(): Promise<HealthCheck> {
   const name = '@ruvector/typesafe router';
@@ -2728,6 +2734,7 @@ export const doctorCommand: Command = {
       'typesafe': checkTypesafeRouter, // opt-in @ruvector/typesafe task router
       'mods': checkMods, // ADR-404 — ruflo as a Claude Code mod
       'learning-loop': checkLearningLoop, // #4581 — verified-outcome learning loop
+      'compact-snapshots': checkCompactSnapshots, // ADR-505 — snapshots must be gitignored
       'headless-plugins': checkHeadlessPlugins, // ADR-510 — mods under claude -p (spawns claude; not in bare doctor)
     };
 
@@ -2852,6 +2859,7 @@ export const doctorCommand: Command = {
       checkAuth, // ADR-306 — Cognitum identity (warn-only; never fails bare `ruflo doctor`)
       checkMods, // ADR-404 — Claude Code mod path (warn-only)
       checkLearningLoop, // #4581 — verified outcomes reach SONA (warn-only)
+      checkCompactSnapshots, // ADR-505 — compaction snapshots gitignored (warn-only)
     ];
 
     let checksToRun = allChecks;
@@ -2890,6 +2898,7 @@ export const doctorCommand: Command = {
       [checkProxyBindAddress, 'proxy-bind'], [checkAuth, 'auth'],
       [checkTypesafeRouter, 'typesafe'], [checkMods, 'mods'],
       [checkLearningLoop, 'learning-loop'], [checkHeadlessPlugins, 'headless-plugins'],
+      [checkCompactSnapshots, 'compact-snapshots'],
     ]);
     nativeAgentDbChecks.forEach((check, index) => {
       // The path distinguishes simultaneous authority files; normalize separators.
