@@ -1,6 +1,6 @@
 # ADR 509: trust for the ruflo plugin marketplace — signing, scan before install, refusing project auto-approve keys
 
-Status: Proposed (2026-10-29)
+Status: Accepted (implemented in PR #4593, 2026-10-29)
 
 Issue: #4581 follow-up 7. Builds on: the `modTrust` gate (ADR-404), `settings-risk-scanner.ts`, the helpers signing key (`ruflo-helpers-signing-key`), and `metaharness mcp-scan`.
 
@@ -71,3 +71,104 @@ When `ruflo init` or `init --upgrade` would carry such a key forward, it now **s
 - The risk scanner covers each new key.
 - `init` stops and `--drop-risky-settings` removes the key.
 - Live: `ruflo plugins verify ruflo-mods` reports `verified` on a published release clone.
+
+## Implementation notes
+
+What shipped, and where it differs from §2.
+
+**§2.1 signing.**
+- `v3/@claude-flow/cli/scripts/sign-plugins.mjs` signs every plugin listed in `.claude-plugin/marketplace.json`. It writes `signature.json` into the plugin's marketplace `source` directory: `plugins/<name>` for most plugins, a subdirectory such as `plugins/ruflo-ai-team/directory` for the few whose source points there.
+- It resolves the key exactly as `scripts/sign-helpers.mjs` does:
+  - `RUFLO_HELPERS_SIGNING_SECRET` + `RUFLO_HELPERS_SIGNING_PROJECT`;
+  - `RUFLO_HELPERS_SIGNING_KEY`;
+  - `~/.ruflo/helpers-signing.key`;
+  - `--stdin-key`.
+
+  It never prints the key, and it refuses a non-Ed25519 key without echoing it.
+- **Inside a git checkout it signs only the files git tracks.** A stray untracked file in the release checkout then verifies as `extra` and is never vouched for.
+- **This PR signs nothing with the real key.** The tests use a generated key pair. Every plugin reports `unsigned` until the first signed release.
+- **Release step** (after the tree is final, before tagging):
+
+  ```bash
+  RUFLO_HELPERS_SIGNING_SECRET=ruflo-helpers-signing-key RUFLO_HELPERS_SIGNING_PROJECT=ruv-dev \
+    node v3/@claude-flow/cli/scripts/sign-plugins.mjs
+  node v3/@claude-flow/cli/bin/cli.js plugins verify --clone . --strict   # every plugin must print verified
+  ```
+
+  Commit the `signature.json` files with the release. Re-sign whenever a plugin file changes: a stale signature reads as `modified`.
+- **Verifier** (`src/plugins/marketplace-trust/signature.ts`). It uses the pinned `RUFLO_HELPERS_PUBKEY`.
+  - A signature whose `plugin` field is not the marketplace name is `bad-signature`, so a valid signature cannot be copied onto another plugin.
+  - Symlinks are digested as `link:<target>` and never followed.
+  - `.git` and `node_modules` are not signed content.
+- **Status file location.** The status file is `~/.claude-flow/mods/plugin-verify.json`, keyed by Claude Code config dir. It lives under home rather than in the project, so a repository cannot ship a file that says its own tampered clone verified. These commands write it:
+  - `ruflo mods install`, after the claude step;
+  - `ruflo mods doctor`;
+  - `ruflo plugins verify`, unless `--clone` is given.
+- **Mod gate.** The `plugin.register` gate (`plugins/ruflo-mods/hooks/trust.ts`, `marketplaceRefusal`) refuses a user-tier `<name>@ruflo` module whose result is `modified` or `bad-signature`. It does so only under `modTrust: refuse-risky`.
+  - `modTrustAllow` does not exempt the check: a tampered clone shares the allow-listed provenance.
+  - A missing or unreadable result, `unsigned`, or `verified` is not enforced, because unknown is not a refusal.
+  - A verified module still goes through the existing risk judge.
+- **Exit and doctor behaviour.**
+  - `ruflo mods doctor` reports `unsigned` as a pass that says "unsigned", so `mods doctor --strict` CI gates do not fail before the first signed release. `modified` and `bad-signature` warn.
+  - `ruflo plugins verify` exits 1 on `modified` and `bad-signature`. With `--strict` it also exits 1 on `unsigned`.
+
+**§2.2 scan before install.**
+- `src/plugins/marketplace-trust/scan.ts` is a built-in static scan. `metaharness mcp-scan` is not called: it is an optional subprocess, and it reads a harness layout (`.mcp/servers.json`), not a plugin layout. The scan reuses two existing rule sets:
+  - the settings-risk-scanner command rules, for `.mcp.json` server commands and `hooks/hooks.json` command hooks;
+  - the capability names from the ruflo-mods trust classifier (`$.process`, `$.http.fetch`, `$.mcp`, `$.tool.call`, `$.config.set`), for hook modules.
+- **Severity.**
+  - High: a dangerous command, or a hook module that imports `child_process` or uses `eval` / `new Function`.
+  - Medium: a capability use, an unpinned `npx -y` server, or a remote plain-http MCP URL.
+  - Measured on this tree: 0 high and 17 medium across all 47 marketplace plugins, so no ruflo plugin is blocked.
+- **`ruflo mods install` and `ruflo init` (mods path).** The scan runs after the marketplace refresh and before any `claude plugin install`. It is wired in through a new `beforeInstall` hook in `repairPluginInstall`.
+  - A blocked plugin's install step does not run. The step output names the file and the rule.
+  - `--accept-risk <plugin>` on `ruflo mods install` overrides the block. The override is recorded under `acceptedRisk` in `.claude-flow/mods/install.json`.
+  - `ruflo init` has no `--accept-risk` of its own. A plugin it blocks is reported, and `ruflo mods install --accept-risk <name>` completes it.
+  - A `--source local` directory marketplace has no install step, so nothing is gated there.
+- **`ruflo plugins install`.**
+  - A local-path install is scanned the same way, with `--accept-risk <dir-name>`.
+  - An npm or registry install is not scanned before it is registered: the package lands inside the plugin manager. That path keeps its existing checksum and trust gates.
+
+**§2.3 project auto-approve keys.**
+- `settings-risk-scanner.ts` gains `scanProjectAutoApproveKeys` and `dropAutoApproveKeys`.
+- **What counts as a ruflo helper.** A hook counts as one when `isRufloHelperCommand` (in `helper-commands.ts`) recognises it, with nothing chained onto it. That covers:
+  - every form ruflo generates;
+  - the older `npx @claude-flow/cli@… hooks|memory …` hooks that `init upgrade` migrates.
+
+  ruflo's own generated settings produce no finding, so a re-init never stops on itself.
+- **Where it stops.** The check runs before anything is written, so a stop leaves the project untouched. These commands can stop:
+  - `ruflo init` and its wizard, when merging into an existing `.claude/settings.json`;
+  - `init hooks`;
+  - `init upgrade --settings`.
+
+  `--force`, and an upgrade without `--settings`, carry nothing forward and never stop.
+- **Flags.** `--keep-risky-settings` keeps the keys and still reports them. `--drop-risky-settings` writes the merged file without them. Passing both is an error.
+- **Doctor.** `ruflo init` merges only `settings.json`. `ruflo doctor` (component `auto-approve`) warns on both `settings.json` and `settings.local.json`.
+- **Behaviour change for existing projects.** If a project's settings carry any hook ruflo did not write (for example a formatter), `init upgrade --settings` now stops until one of the two flags is given. Two existing test fixtures carry such a hook. Both now pass `--keep-risky-settings` and assert the stop:
+  - `mods-commands.test.ts`, case `--add-missing and --settings`;
+  - `doctor-2677-stale-settings.test.ts`.
+
+**Live validation.**
+- **Setup.** Claude Code 2.1.289 with haiku and `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. `--plugin-dir` pointed at this branch's `plugins/ruflo-mods`, and `modTrust: refuse-risky` was set through `--settings pluginConfigs`. A temporary status file marked three marketplace-installed plugins:
+  - `ruflo-docs` as `modified`;
+  - `ruflo-jujutsu` as `bad-signature`;
+  - `ruflo-testgen` as `verified`.
+- **Mod gate result.** The debug log showed:
+  - `ruflo-docs@ruflo` refused with "marketplace clone is modified (ADR-509 signature check)";
+  - `ruflo-jujutsu@ruflo` refused as `bad-signature`;
+  - `ruflo-testgen@ruflo` passed through to the risk judge.
+
+  The temporary file was removed afterwards.
+- **Init result.** The scratch project's settings held `enableAllProjectMcpServers: true` and a bare `Bash` allow. `ruflo init` stopped with exit 1 and wrote nothing. The same run with `--drop-risky-settings` wrote merged settings without either key.
+
+**Not done here.** §4 asks for a live `ruflo plugins verify ruflo-mods` that reports `verified` on a published release clone. That needs the first signed release; until then it reports `unsigned`.
+
+### Review fix pass (same PR)
+
+- **§2.3 classifier is an exact match.** `isRufloHelperCommand` no longer reuses `pinToUserHelpers` (a rewriter that accepted `node -e` bodies naming a helper, and any node flags before the helper path). It compares the command by string equality against the closed set ruflo generates or has generated: each helper (`hook-handler.cjs`, `auto-memory-hook.mjs`) × an allow-list of subcommands × scope × platform, the statusline forms, the legacy sh / cmd / `IF EXIST` / git-root `node -e` / relative forms, and `npx @claude-flow/cli@<tag|version> hooks|memory <sub>` (never a bare package name, which a project's `node_modules/.bin` could answer). `node -e` with extra code, `-r`/`--require`, `--import`, a `NODE_OPTIONS=` prefix and a helper path in a comment are now findings.
+- **§2.3 project-shipped helpers.** `init` keeps an existing `.claude/helpers/*` without `--force`, and project-scope hooks prefer the project copy, so an exact ruflo hook could still run repository code. `init` now also stops when a critical helper (the signed set) is neither the copy this ruflo ships nor in a helpers manifest signed with ruflo's key. `--drop-risky-settings` replaces it with ruflo's copy; `--keep-risky-settings` keeps and reports it; `ruflo doctor` warns. A `.LOCKED` helpers dir is skipped, and with no ground truth at all (no shipped copy, no signed manifest) the check fails open, as `helper-integrity` does. `init upgrade` already overwrites the critical helpers, so it needs no such check.
+- **§2.2 a blocked plugin is never left enabled.** Claude Code loads an enabled plugin from the marketplace clone, install or not. `applyMods` now scans an existing clone before it enables anything and does not enable a blocked plugin; one the post-refresh scan blocks has its `enabledPlugins` key removed and is dropped from the install record. This covers `--no-plugin-install`, test/CI and no-`claude` runs. **Limit:** with no clone on disk yet there is nothing to scan; the run says the plugins are enabled unscanned, and Claude Code's first trusted start clones and loads them. A finding in a stale clone that the refresh would fix keeps that plugin off until the next run.
+- **§2.2 the scan reads what loads.** `hooks.json` `modules` are resolved against hooks.json and every relative `import` / `export … from` / `import()` / `require()` they reach is followed (extension, `.js`→`.ts` and `index.*` resolution; type-only imports skipped). The walk's test-name, `tests/` and size skips do not apply to those files. A loaded file that is missing, unreadable, over 1 MB, outside the plugin, or loads a computed module name is a high finding. Every plugin in this repo still scans with no high finding.
+- **§2.1 Windows.** Both sides key the status file with one normalization (forward slashes, no trailing slash, drive paths lower-cased); the mod uses `USERPROFILE` when it is a Windows path (what `os.homedir()` used), else `HOME`. `plugins/.gitattributes` (`** -text`) turns off line-ending conversion so a `core.autocrlf=true` clone hashes as signed. Not exercised on a Windows host here: covered by harness tests with Windows paths and an MSYS `HOME`.
+- **§2.1 the copy that runs.** Every writer (`mods install`, `mods doctor`, `plugins verify`, which now records the cache even with `--no-cache`) records the install-cache copies too: per plugin the worst of all copies, and each copy by its directory. The mod looks up the `plugin.register` `root` (the plugin directory being loaded) first and falls back to the per-plugin worst.
+- **Live validation of the fix pass** (Claude Code 2.1.289, `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`, `--plugin-dir` at this branch's ruflo-mods, `modTrust: refuse-risky`; `/cost` prompts, so no model call). A temporary status file keyed `/home/<user>/.claude/` (trailing slash) marked `ruflo-jujutsu` `modified` in `plugins` and the directory `…/plugins/ruflo-docs/` `modified` in `paths` while `plugins` said `ruflo-docs: verified`. The debug log showed `ruflo-docs@ruflo copy at …/plugins/ruflo-docs is modified` (path lookup, matching the engine's `root`), `ruflo-jujutsu@ruflo marketplace clone is modified` (normalized config-dir key) and `ruflo-testgen` passed on to the risk judge. The file was removed afterwards.

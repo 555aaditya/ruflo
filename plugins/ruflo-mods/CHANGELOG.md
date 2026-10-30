@@ -2,6 +2,9 @@
 
 Newest first. One `## <version> — <date>` heading per version, then `feat:`, `fix:`, `breaking:` and `chore:` bullets (ADR-478). Built from git history; older versions: `git log -- plugins/ruflo-mods`.
 
+## 0.12.0 — 2026-10-29
+- feat: under `modTrust: refuse-risky`, the trust gate also refuses a ruflo plugin whose files no longer match its signed release (`modified` or `bad-signature` in the status file `ruflo mods doctor` / `ruflo plugins verify` write); `unsigned` and `verified` pass, and each blocked plugin is reported once per run (ADR-509, #4593).
+
 ## 0.11.0 — 2026-10-29
 - feat: option `costLedger` (default on, ADR-508, #4592): with `costBudgetUsd` at 0 the cost ladder takes its limit from the smallest window in `.claude-flow/cost/budget.json` and names that window; each `session.measure` cost delta is charged to the subagent type and the tool that ran before it, written as one line per session to `.claude-flow/cost/attribution.jsonl` (read by `ruflo cost report`); a gateway budget refusal is toasted once and counted, never retried.
 
