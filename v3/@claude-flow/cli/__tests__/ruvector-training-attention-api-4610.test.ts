@@ -6,8 +6,9 @@
  *
  * Runs against the real binding, since a mock would hide exactly this kind of
  * API mismatch. vitest externalizes `@ruvector/*`, so the source runs in a child
- * process under tsx (as agentic-flow-root-import.test.ts does). Skipped where
- * @ruvector/attention is not installed.
+ * process under tsx (as agentic-flow-root-import.test.ts does). Each case runs
+ * only if initializeTraining actually brought the feature up: resolving the
+ * package is not enough, since the native binding can still fail to load (CI).
  */
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -24,7 +25,7 @@ function probe(body: string): Record<string, any> {
   const script = `
     const rt = await import(${SRC});
     const binding = (await import('node:module')).createRequire(import.meta.url)('@ruvector/attention');
-    await rt.initializeTraining({ dim: 8, useFlashAttention: true, useMoE: true, useHyperbolic: true });
+    const init = await rt.initializeTraining({ dim: 8, useFlashAttention: true, useMoE: true, useHyperbolic: true });
     const vec = s => Float32Array.from({ length: 8 }, (_, i) => Math.sin(s + i) * 0.5);
     const out = {};
     const attempt = (name, f) => { try { out[name] = f(); } catch (e) { out[name] = { error: e.constructor.name + ': ' + e.message }; } };
@@ -37,8 +38,20 @@ function probe(body: string): Record<string, any> {
   return JSON.parse(line.slice('RESULT='.length));
 }
 
-describe.skipIf(!hasBinding)('ruvector-training against the real @ruvector/attention API (#4610)', () => {
-  it('computeContrastiveLoss returns the binding loss and gradients, averaging positives', () => {
+/** Features initializeTraining reported in a child, or [] when it could not run. */
+const features: string[] = (() => {
+  if (!hasBinding) return [];
+  try { return probe('out.features = init.features ?? [];').features ?? []; } catch { return []; }
+})();
+const has = (name: string) => features.some((f) => f.startsWith(name));
+const HELPERS = [
+  ['computeFlashAttention', 'FlashAttention'],
+  ['computeMoEAttention', 'MoE'],
+  ['computeHyperbolicAttention', 'HyperbolicAttention'],
+] as const;
+
+describe('ruvector-training against the real @ruvector/attention API (#4610)', () => {
+  it.skipIf(!has('InfoNCE Loss'))('computeContrastiveLoss returns the binding loss and gradients, averaging positives', () => {
     const r = probe(`
       const anchor = vec(1), negatives = [vec(7), vec(9)];
       attempt('one', () => rt.computeContrastiveLoss(anchor, [vec(2)], negatives));
@@ -57,14 +70,12 @@ describe.skipIf(!hasBinding)('ruvector-training against the real @ruvector/atten
     expect(r.none.error).toMatch(/at least one positive/);
   }, 150_000);
 
-  it('flash, MoE and hyperbolic attention helpers return attended vectors', () => {
-    const r = probe(`
-      for (const fn of ['computeFlashAttention', 'computeMoEAttention', 'computeHyperbolicAttention'])
-        attempt(fn, () => rt[fn](vec(1), [vec(2), vec(3)], [vec(4), vec(5)]));`);
-    // Baseline: { error: 'TypeError: <x>Attention.computeRaw is not a function' }.
-    for (const fn of ['computeFlashAttention', 'computeMoEAttention', 'computeHyperbolicAttention']) {
+  for (const [fn, feature] of HELPERS) {
+    it.skipIf(!has(feature))(`${fn} returns an attended vector`, () => {
+      const r = probe(`attempt('${fn}', () => rt.${fn}(vec(1), [vec(2), vec(3)], [vec(4), vec(5)]));`);
+      // Baseline: { error: 'TypeError: <x>Attention.computeRaw is not a function' }.
       expect(r[fn].error, fn).toBeUndefined();
       expect(r[fn], fn).toHaveLength(8);
-    }
-  }, 150_000);
+    }, 150_000);
+  }
 });
